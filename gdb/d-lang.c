@@ -21,6 +21,9 @@
 #include "symtab.h"
 #include "language.h"
 #include "varobj.h"
+#include "objfiles.h"
+#include "completer.h"
+#include "block.h"
 #include "d-lang.h"
 #include "c-lang.h"
 #include "demangle.h"
@@ -197,6 +200,164 @@ d_language_arch_info (struct gdbarch *gdbarch,
 
   lai->bool_type_symbol = "bool";
   lai->bool_type_default = builtin->builtin_bool;
+}
+
+/* A companion function to d_make_symbol_completion_list().
+   Check if NAME represents a symbol which name would be suitable
+   to complete TEXT (TEXT_LEN is the length of TEXT), in which case
+   it is appended at the end of the given string vector SV.
+
+   WORD is the entire command on which completion should be performed.
+   This is used to determine which part of the symbol name should be
+   added to the completion vector.  */
+
+static void
+symbol_completion_add (VEC(char_ptr) **sv,
+		       const char *name, const char *text,
+		       int text_len, const char *word)
+{
+  char *completion;
+
+  if (!text_len || strncmp (name, text, text_len) != 0)
+    return;
+
+  /* We found a match, so add the appropriate completion to the given
+     string vector.  */
+
+  if (word == text)
+    {
+      completion = (char *) xmalloc (strlen (name) + 5);
+      strcpy (completion, name);
+    }
+  else if (word > text)
+    {
+      /* Return some portion of name.  */
+      completion = (char *) xmalloc (strlen (name) + 5);
+      strcpy (completion, name + (word - text));
+    }
+  else
+    {
+      /* Return some of TEXT plus name.  */
+      completion = (char *) xmalloc (strlen (name) + (text - word) + 5);
+      strncpy (completion, word, text - word);
+      completion[text - word] = '\0';
+      strcat (completion, name);
+    }
+
+  VEC_safe_push (char_ptr, *sv, completion);
+}
+
+/* Implements the la_make_symbol_completion_list language_defn
+   routine for language D.  */
+
+static VEC (char_ptr) *
+d_make_symbol_completion_list (const char *text, const char *word,
+			       enum type_code code)
+{
+  VEC(char_ptr) *completions = VEC_alloc (char_ptr, 128);
+  int text_len = strlen (text);
+  int qualified = strchr (text, '.') != NULL;
+  struct symbol *sym;
+  struct minimal_symbol *msymbol;
+  struct objfile *objfile;
+  const struct block *block;
+  const struct block *surrounding_static_block, *surrounding_global_block;
+  struct block_iterator iter;
+  const char *scope;
+  int scope_len;
+  struct cleanup *old_chain = make_cleanup (null_cleanup, NULL);
+
+  gdb_assert (code == TYPE_CODE_UNDEF);
+
+  /* Search upwards from currently selected frame (so that we can
+     complete on local vars.  */
+  block = get_selected_block (0);
+  scope = block_scope (block);
+  scope_len = strlen (scope);
+  surrounding_static_block = block_static_block (block);
+  surrounding_global_block = block_global_block (block);
+
+  if (surrounding_static_block != NULL)
+    while (block != surrounding_static_block)
+      {
+	QUIT;
+
+	ALL_BLOCK_SYMBOLS (block, iter, sym)
+	{
+	  symbol_completion_add (&completions, SYMBOL_LINKAGE_NAME (sym),
+				 text, text_len, word);
+	}
+
+	/* Stop when we encounter an enclosing function.  Do not stop for
+	   non-inlined functions - the locals of the enclosing function
+	   are in scope for a nested function.  */
+	if (BLOCK_FUNCTION (block) != NULL && block_inlined_p (block))
+	  break;
+
+	block = BLOCK_SUPERBLOCK (block);
+      }
+
+  /* Go through the symtabs and check the externs and statics for
+     symbols which match.  */
+  if (surrounding_static_block != NULL)
+    ALL_BLOCK_SYMBOLS (surrounding_static_block, iter, sym)
+    {
+      int len = VEC_length (char_ptr, completions);
+      const char *name = SYMBOL_LINKAGE_NAME (sym);
+
+      symbol_completion_add (&completions, name, text, text_len, word);
+
+      /* Also check for symbols in the given module scope.  */
+      if (strlen (name) > scope_len && startswith (name, scope)
+	  && name[scope_len] == '.')
+	{
+	  symbol_completion_add (&completions,
+				 name + (scope_len + 1),
+				 text, text_len, word);
+	}
+    }
+
+  if (surrounding_global_block != NULL)
+    ALL_BLOCK_SYMBOLS (surrounding_global_block, iter, sym)
+    {
+      int len = VEC_length (char_ptr, completions);
+      const char *name = SYMBOL_LINKAGE_NAME (sym);
+
+      /* If searching for a qualified name, demangle the global symtol.  */
+      if (qualified)
+	{
+	  const char *demangled = gdb_demangle (name, DMGL_DLANG);
+	  if (demangled)
+	    name = demangled;
+	}
+
+      symbol_completion_add (&completions, name, text, text_len, word);
+
+      /* Also check for symbols in the given module scope.  */
+      if (strlen (name) > scope_len && startswith (name, scope)
+	  && name[scope_len] == '.')
+	{
+	  symbol_completion_add (&completions,
+				 name + (scope_len + 1),
+				 text, text_len, word);
+	}
+    }
+
+  if (VEC_length (char_ptr, completions) == 0)
+    {
+      /* At this point scan through the misc symbol vectors and add each
+	 symbol you find to the list.  */
+      ALL_MSYMBOLS (objfile, msymbol)
+	{
+	  QUIT;
+
+	  symbol_completion_add (&completions, MSYMBOL_LINKAGE_NAME (msymbol),
+				 text, text_len, word);
+	}
+    }
+
+  do_cleanups (old_chain);
+  return completions;
 }
 
 /* Return non-zero if TYPE is a dynamic array.
@@ -413,7 +574,7 @@ static const struct language_defn d_language_defn =
   1,				/* C-style arrays.  */
   0,				/* String lower bound.  */
   default_word_break_characters,
-  default_make_symbol_completion_list,
+  d_make_symbol_completion_list,
   d_language_arch_info,
   default_print_array_index,
   default_pass_by_reference,
