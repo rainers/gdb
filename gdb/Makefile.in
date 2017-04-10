@@ -1049,6 +1049,7 @@ SFILES = \
 	d-exp.y \
 	d-lang.c \
 	d-namespace.c \
+	d-typeprint.c \
 	d-valprint.c \
 	dbxread.c \
 	demangle.c \
@@ -1656,6 +1657,7 @@ COMMON_OBS = $(DEPFILES) $(CONFIG_OBS) $(YYOBJ) \
 	cp-valprint.o \
 	d-lang.o \
 	d-namespace.o \
+	d-typeprint.o \
 	d-valprint.o \
 	dbxread.o \
 	debug.o \
