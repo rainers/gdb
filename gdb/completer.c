@@ -635,6 +635,10 @@ expression_completer (struct cmd_list_element *ignore,
     }
   xfree (fieldname);
 
+  /* Complete on the entire text as a symbol.  */
+  if (current_language->la_language == language_d)
+    return make_symbol_completion_list (text, word);
+
   /* Commands which complete on locations want to see the entire
      argument.  */
   for (p = word;

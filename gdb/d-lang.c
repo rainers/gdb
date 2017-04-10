@@ -24,6 +24,7 @@
 #include "objfiles.h"
 #include "completer.h"
 #include "block.h"
+#include "namespace.h"
 #include "d-lang.h"
 #include "c-lang.h"
 #include "demangle.h"
@@ -218,12 +219,16 @@ symbol_completion_add (VEC(char_ptr) **sv,
 {
   char *completion;
 
-  if (!text_len || strncmp (name, text, text_len) != 0)
+  if (strncmp (name, text, text_len) != 0)
+    return;
+
+  /* Don't complete on symbols with spaces in their name.
+     FIXME: Except if using 'quotes'  */
+  if (strchr (name, ' ') != NULL)
     return;
 
   /* We found a match, so add the appropriate completion to the given
      string vector.  */
-
   if (word == text)
     {
       completion = (char *) xmalloc (strlen (name) + 5);
@@ -256,15 +261,15 @@ d_make_symbol_completion_list (const char *text, const char *word,
 {
   VEC(char_ptr) *completions = VEC_alloc (char_ptr, 128);
   int text_len = strlen (text);
-  int qualified = strchr (text, '.') != NULL;
   struct symbol *sym;
   struct minimal_symbol *msymbol;
   struct objfile *objfile;
   const struct block *block;
   const struct block *surrounding_static_block, *surrounding_global_block;
   struct block_iterator iter;
-  const char *scope;
-  int scope_len;
+  const char *module = NULL;
+  int module_len;
+  struct using_direct *imports, *current;
   struct cleanup *old_chain = make_cleanup (null_cleanup, NULL);
 
   gdb_assert (code == TYPE_CODE_UNDEF);
@@ -272,11 +277,15 @@ d_make_symbol_completion_list (const char *text, const char *word,
   /* Search upwards from currently selected frame (so that we can
      complete on local vars.  */
   block = get_selected_block (0);
-  scope = block_scope (block);
-  scope_len = strlen (scope);
+  module = block_scope (block);
+  module_len = strlen (module);
+
   surrounding_static_block = block_static_block (block);
   surrounding_global_block = block_global_block (block);
 
+  imports = block_using (surrounding_static_block);
+
+  /* Go through all lexical blocks in the currect scope.  */
   if (surrounding_static_block != NULL)
     while (block != surrounding_static_block)
       {
@@ -302,51 +311,111 @@ d_make_symbol_completion_list (const char *text, const char *word,
   if (surrounding_static_block != NULL)
     ALL_BLOCK_SYMBOLS (surrounding_static_block, iter, sym)
     {
-      int len = VEC_length (char_ptr, completions);
       const char *name = SYMBOL_LINKAGE_NAME (sym);
 
       symbol_completion_add (&completions, name, text, text_len, word);
 
-      /* Also check for symbols in the given module scope.  */
-      if (strlen (name) > scope_len && startswith (name, scope)
-	  && name[scope_len] == '.')
+      /* Also check for symbols in the given module.  */
+      if (strlen (name) > module_len && startswith (name, module)
+	  && name[module_len] == '.')
 	{
 	  symbol_completion_add (&completions,
-				 name + (scope_len + 1),
+				 name + (module_len + 1),
 				 text, text_len, word);
 	}
     }
 
+  /* Go through any imported declarations or aliases.  */
+  for (current = imports; current != NULL; current = current->next)
+    {
+      if ((current->declaration == NULL && current->alias == NULL)
+	  || strcmp (module, current->import_dest) != 0)
+	continue;
+
+      if (current->alias != NULL)
+	symbol_completion_add (&completions,
+			       current->alias,
+			       text, text_len, word);
+      else
+	symbol_completion_add (&completions,
+			       current->declaration,
+			       text, text_len, word);
+    }
+
+  /* Now go through the global symtab, demangling any D symbols found.  */
   if (surrounding_global_block != NULL)
     ALL_BLOCK_SYMBOLS (surrounding_global_block, iter, sym)
     {
-      int len = VEC_length (char_ptr, completions);
       const char *name = SYMBOL_LINKAGE_NAME (sym);
-
-      /* If searching for a qualified name, demangle the global symtol.  */
-      if (qualified)
-	{
-	  const char *demangled = gdb_demangle (name, DMGL_DLANG);
-	  if (demangled)
-	    name = demangled;
-	}
+      int name_len = strlen (name);
+      const char *demangled = gdb_demangle (name, DMGL_DLANG);
 
       symbol_completion_add (&completions, name, text, text_len, word);
 
-      /* Also check for symbols in the given module scope.  */
-      if (strlen (name) > scope_len && startswith (name, scope)
-	  && name[scope_len] == '.')
+      if (demangled != NULL)
 	{
-	  symbol_completion_add (&completions,
-				 name + (scope_len + 1),
-				 text, text_len, word);
+	  /* Check against the qualified symbol.  */
+	  name = demangled;
+	  symbol_completion_add (&completions, name, text, text_len, word);
+
+	  /* Check for unqualified symbols in the current module.  */
+	  if (name_len > module_len && startswith (name, module)
+	      && name[module_len] == '.')
+	    {
+	      symbol_completion_add (&completions,
+				     name + (module_len + 1),
+				     text, text_len, word);
+	    }
+
+	  /* Check for unqualified symbols from imported modules.  */
+	  for (current = imports; current != NULL; current = current->next)
+	    {
+	      int import_len;
+
+	      /* Skip over imports outside of the current module.
+		 Don't check any imported declarations again.  */
+	      if (current->declaration != NULL
+		  || strcmp (module, current->import_dest) != 0)
+		continue;
+
+	      import_len = strlen (current->import_src);
+	      if (name_len > import_len
+		  && startswith (name, current->import_src)
+		  && name[import_len] == '.')
+		{
+		  if (current->alias != NULL)
+		    {
+		      /* Build the alias name we might be completing for,
+			 completions only happen if we are matching a
+			 qualified ALIAS.NAME symbol.  */
+		      int alias_len = strlen (current->alias);
+
+		      if (text_len > alias_len
+			  && startswith (text, current->alias)
+			  && text[alias_len] == '.')
+			{
+			  char *alias_name = (char *) alloca (name_len + alias_len + 2);
+
+			  strcpy (alias_name, current->alias);
+			  strcat (alias_name, name + import_len);
+
+			  symbol_completion_add (&completions, alias_name,
+						 text, text_len, word);
+			}
+		    }
+		  else
+		    symbol_completion_add (&completions,
+					   name + (import_len + 1),
+					   text, text_len, word);
+		}
+	    }
 	}
     }
 
   if (VEC_length (char_ptr, completions) == 0)
     {
       /* At this point scan through the misc symbol vectors and add each
-	 symbol you find to the list.  */
+	 symbol we find to the list.  */
       ALL_MSYMBOLS (objfile, msymbol)
 	{
 	  QUIT;

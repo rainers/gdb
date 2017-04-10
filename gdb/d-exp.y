@@ -633,6 +633,12 @@ BasicType2:
 		{ push_type (tp_pointer); }
 |	'*' BasicType2
 		{ push_type (tp_pointer); }
+|	'[' ']'
+		{ push_type_int (-1);
+		  push_type (tp_array); }
+|	'[' ']' BasicType2
+		{ push_type_int (-1);
+		  push_type (tp_array); }
 |	'[' INTEGER_LITERAL ']'
 		{ push_type_int ($2.val);
 		  push_type (tp_array); }
