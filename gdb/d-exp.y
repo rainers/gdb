@@ -162,11 +162,11 @@ static int parse_number (struct parser_state *, const char *,
 %left '^'
 %left '&'
 %left EQUAL NOTEQUAL '<' '>' LEQ GEQ
-%right LSH RSH
+%right LSH RSH URSH
 %left '+' '-'
 %left '*' '/' '%'
 %right HATHAT
-%left IDENTITY NOTIDENTITY
+%left IDENTITY
 %right INCREMENT DECREMENT
 %right '.' '[' '('
 %token DOTDOT
@@ -254,7 +254,7 @@ EqualExpression:
 IdentityExpression:
 	ShiftExpression IDENTITY ShiftExpression
 		{ write_exp_elt_opcode (pstate, BINOP_EQUAL); }
-|	ShiftExpression NOTIDENTITY ShiftExpression
+|	ShiftExpression '!' IDENTITY ShiftExpression
 		{ write_exp_elt_opcode (pstate, BINOP_NOTEQUAL); }
 ;
 
@@ -274,6 +274,8 @@ ShiftExpression:
 |	ShiftExpression LSH AddExpression
 		{ write_exp_elt_opcode (pstate, BINOP_LSH); }
 |	ShiftExpression RSH AddExpression
+		{ write_exp_elt_opcode (pstate, BINOP_RSH); }
+|	ShiftExpression URSH AddExpression
 		{ write_exp_elt_opcode (pstate, BINOP_RSH); }
 ;
 
@@ -313,6 +315,7 @@ UnaryExpression:
 		{ write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT); }
 |	'~' UnaryExpression
 		{ write_exp_elt_opcode (pstate, UNOP_COMPLEMENT); }
+/*|	'(' TypeExp ')' '.' IDENTIFIER*/
 |	TypeExp '.' SIZEOF_KEYWORD
 		{ write_exp_elt_opcode (pstate, UNOP_SIZEOF); }
 |	CastExpression
@@ -389,7 +392,7 @@ CallExpression:
 
 IndexExpression:
 	PostfixExpression '[' ArgumentList ']'
-		{ if (arglist_len > 0)
+		{ if (arglist_len > 1)
 		    {
 		      write_exp_elt_opcode (pstate, MULTI_SUBSCRIPT);
 		      write_exp_elt_longcst (pstate, (LONGEST) arglist_len);
@@ -562,6 +565,10 @@ PrimaryExpression:
 		  write_exp_elt_opcode (pstate, OP_ARRAY); }
 |	TYPEOF_KEYWORD '(' Expression ')'
 		{ write_exp_elt_opcode (pstate, OP_TYPEOF); }
+|	TYPEID_KEYWORD '(' TypeExp ')'
+		{ write_exp_elt_opcode (pstate, OP_TYPEID); }
+|	TYPEID_KEYWORD '(' Expression ')'
+		{ write_exp_elt_opcode (pstate, OP_TYPEID); }
 ;
 
 ArrayLiteral:
@@ -962,11 +969,17 @@ struct token
   enum exp_opcode opcode;
 };
 
+static const struct token tokentab4[] =
+  {
+    {">>>=", ASSIGN_MODIFY, BINOP_RSH},
+  };
+
 static const struct token tokentab3[] =
   {
     {"^^=", ASSIGN_MODIFY, BINOP_EXP},
     {"<<=", ASSIGN_MODIFY, BINOP_LSH},
     {">>=", ASSIGN_MODIFY, BINOP_RSH},
+    {">>>", BINOP_RSH, BINOP_END},
   };
 
 static const struct token tokentab2[] =
@@ -997,7 +1010,6 @@ static const struct token tokentab2[] =
 static const struct token ident_tokens[] =
   {
     {"is", IDENTITY, BINOP_END},
-    {"!is", NOTIDENTITY, BINOP_END},
 
     {"cast", CAST_KEYWORD, OP_NULL},
     {"const", CONST_KEYWORD, OP_NULL},
@@ -1052,6 +1064,15 @@ lex_one_token (struct parser_state *par_state)
   prev_lexptr = lexptr;
 
   tokstart = lexptr;
+  /* See if it is a special token of length 4.  */
+  for (i = 0; i < sizeof tokentab4 / sizeof tokentab4[0]; i++)
+    if (strncmp (tokstart, tokentab4[i].oper, 4) == 0)
+      {
+	lexptr += 4;
+	yylval.opcode = tokentab4[i].opcode;
+	return tokentab4[i].token;
+      }
+
   /* See if it is a special token of length 3.  */
   for (i = 0; i < sizeof tokentab3 / sizeof tokentab3[0]; i++)
     if (strncmp (tokstart, tokentab3[i].oper, 3) == 0)
