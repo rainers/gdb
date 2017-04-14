@@ -1304,6 +1304,9 @@ dlang_value (string *decl, const char *mangled, const char *name, char type)
 static int
 dlang_call_convention_p (const char *mangled)
 {
+  if (*mangled == 'M')
+    mangled++;
+
   switch (*mangled)
     {
     case 'F': case 'U': case 'V':
@@ -1353,7 +1356,7 @@ dlang_parse_mangle (string *decl, const char *mangled,
 	  string_init (&mods);
 	  mangled = dlang_type_modifiers (&mods, mangled);
 
-	  if (dlang_call_convention_p (mangled))
+	  if (mangled && dlang_call_convention_p (mangled))
 	    {
 	      /* Skip over calling convention and attributes.  */
 	      saved = string_length (decl);
@@ -1402,6 +1405,7 @@ dlang_parse_qualified (string *decl, const char *mangled,
 	    SymbolName
 	    SymbolName QualifiedName
 	    SymbolName TypeFunctionNoReturn QualifiedName
+	    SymbolName M TypeFunctionNoReturn QualifiedName
 	    ^
      The start pointer should be at the above location.
    */
@@ -1425,6 +1429,10 @@ dlang_parse_qualified (string *decl, const char *mangled,
 	{
 	  const char *start = mangled;
 	  int saved = string_length (decl);
+
+	  /* Skip over 'this' parameter.  */
+	  if (*mangled == 'M')
+	    mangled++;
 
 	  /* The rule we expect to match in the mangled string is:
 

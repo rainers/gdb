@@ -22,6 +22,14 @@ _D8demangle4testPFLAiYi
 demangle.test
 #
 --format=dlang
+_D8demangle4testFZv
+demangle.test()
+#
+--format=dlang
+_D8demangle4testMFZ2fnMFZv
+demangle.test().fn()
+#
+--format=dlang
 _D8demangle4testFaZv
 demangle.test(char)
 #
